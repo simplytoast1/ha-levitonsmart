@@ -30,6 +30,7 @@ class LevitonEntity(CoordinatorEntity):
         self.entry_id = entry_id
         self._attr_unique_id = str(device_id) # Ensure string
         self._attr_has_entity_name = True
+        self._attr_name = None  # Use device name only, no entity suffix
 
     @property
     def _data(self) -> Dict[str, Any]:
