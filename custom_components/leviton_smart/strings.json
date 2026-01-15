@@ -1,0 +1,44 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Leviton Smart Login",
+        "description": "Enter your My Leviton account credentials.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "2fa": {
+        "title": "Two-Factor Authentication",
+        "description": "Enter the 2FA code sent to {email}.",
+        "data": {
+          "code": "2FA Code"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "Your session has expired. Please re-enter your password for {email}.",
+        "data": {
+          "password": "Password"
+        }
+      },
+      "reauth_2fa": {
+        "title": "Two-Factor Authentication",
+        "description": "Enter the 2FA code to complete re-authentication.",
+        "data": {
+          "code": "2FA Code"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid credentials or 2FA code.",
+      "cannot_connect": "Unable to connect to My Leviton."
+    },
+    "abort": {
+      "already_configured": "This account is already configured.",
+      "reauth_successful": "Re-authentication successful.",
+      "unknown": "Unknown error occurred."
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "domain": "leviton_smart",
+  "name": "Leviton Decora Smart",
+  "codeowners": ["@simplytoast1"],
+  "config_flow": true,
+  "documentation": "https://github.com/simplytoast1/ha-levitonsmart",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/simplytoast1/ha-levitonsmart/issues",
+  "requirements": [],
+  "version": "1.1.0"
+}
