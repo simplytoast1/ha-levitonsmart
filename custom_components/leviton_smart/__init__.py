@@ -16,6 +16,7 @@ from typing import Dict, Any, List
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -126,6 +127,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, config_entry: ConfigEntry, device_entry: dr.DeviceEntry
+) -> bool:
+    """
+    Allow a device to be manually removed from the device registry.
+
+    HA calls this when the user clicks 'Delete' on a device. We permit deletion
+    only if the device is no longer present in the latest coordinator data,
+    i.e. it has been removed from the Leviton cloud and is now orphaned.
+    """
+    coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
+
+    device_id = next(
+        (identifier[1] for identifier in device_entry.identifiers if identifier[0] == DOMAIN),
+        None,
+    )
+
+    # Allow deletion if the device is not (or no longer) in coordinator data
+    return device_id is None or device_id not in coordinator.data
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

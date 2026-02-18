@@ -67,6 +67,18 @@ class LevitonEntity(CoordinatorEntity):
             sw_version=self._data.get("version"),
         )
 
+    # Auto-remove entities when their device disappears from the coordinator.
+    # Intentionally disabled: a temporary cloud communication failure would cause
+    # all devices to vanish and trigger mass entity deletion. Manual deletion via
+    # async_remove_config_entry_device (in __init__.py) is preferred instead.
+    #
+    # @callback
+    # def _handle_coordinator_update(self) -> None:
+    #     if self.device_id not in self.coordinator.data:
+    #         self.hass.async_create_task(self.async_remove(force_remove=True))
+    #         return
+    #     super()._handle_coordinator_update()
+
     @property
     def available(self) -> bool:
         """Return if entity is available."""
