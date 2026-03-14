@@ -1,6 +1,7 @@
 # Leviton Decora Smart for Home Assistant
 
-[![HACS Badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+[![HACS Badge](https://img.shields.io/badge/HACS-Default-blue.svg)](https://github.com/hacs/integration)
+[![Validate](https://github.com/simplytoast1/ha-levitonsmart/actions/workflows/validate.yml/badge.svg)](https://github.com/simplytoast1/ha-levitonsmart/actions/workflows/validate.yml)
 
 A modern Home Assistant integration for Leviton Decora Smart Wi-Fi devices with real-time WebSocket updates.
 
