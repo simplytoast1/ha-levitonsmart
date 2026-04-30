@@ -29,6 +29,7 @@ MODELS_LIGHT = [
     "D26HD",  # 600W Dimmer
     "D2ELV",  # ELV Dimmer
     "D2MSD",  # Motion Sensor Dimmer
+    "D36HD",  # Decora Smart Wi-Fi 2 / Matter 600W Dimmer
     "DW1KD",  # 1000W Dimmer
     "DW3HL",  # 300W Dimmer
     "DW6HD",  # 600W Dimmer

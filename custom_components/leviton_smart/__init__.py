@@ -15,7 +15,7 @@ import asyncio
 from typing import Dict, Any, List
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -89,6 +89,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Initial fetch
     await coordinator.async_config_entry_first_refresh()
 
+    # Track which device IDs the WebSocket has subscribed to.
+    known_ws_ids: set[str] = set()
+
     # Callback for WebSocket updates
     def on_update(data: Dict[str, Any]) -> None:
         """
@@ -112,9 +115,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Initialize and start WebSocket
     ws = LevitonWebSocket(session, login_response, on_update)
     _LOGGER.info("Starting WebSocket connection...")
-    
+
     # device_ids are keys in coordinator.data
-    ws.start(list(coordinator.data.keys()))
+    initial_ids = [str(k) for k in coordinator.data.keys()]
+    known_ws_ids.update(initial_ids)
+    ws.start(initial_ids)
+
+    # Subscribe to any new devices that appear on subsequent coordinator refreshes.
+    @callback
+    def _subscribe_new_devices() -> None:
+        new_ids = [str(d) for d in coordinator.data.keys() if str(d) not in known_ws_ids]
+        for device_id in new_ids:
+            known_ws_ids.add(device_id)
+            hass.async_create_task(ws.add_device(device_id))
+        if new_ids:
+            _LOGGER.info("Discovered %d new Leviton device(s): %s", len(new_ids), new_ids)
+
+    entry.async_on_unload(coordinator.async_add_listener(_subscribe_new_devices))
 
     # Store everything in hass.data for platforms to access
     hass.data[DOMAIN][entry.entry_id] = {

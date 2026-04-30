@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 from homeassistant.components.fan import FanEntity, FanEntityFeature
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util.percentage import (
     ordered_list_item_to_percentage,
@@ -42,14 +42,26 @@ async def async_setup_entry(
     client = hass.data[DOMAIN][config_entry.entry_id]["client"]
     coordinator = hass.data[DOMAIN][config_entry.entry_id]["coordinator"]
 
-    entities = []
+    known_ids: set[str] = set()
 
-    for device_id, device_data in coordinator.data.items():
-        model = device_data.get("model", "")
-        if model in MODELS_FAN:
-            entities.append(LevitonFan(client, coordinator, device_id, config_entry.entry_id))
+    @callback
+    def _add_new_entities() -> None:
+        new_entities = []
+        for device_id, device_data in coordinator.data.items():
+            device_id = str(device_id)
+            if device_id in known_ids:
+                continue
+            model = device_data.get("model", "")
+            if model in MODELS_FAN:
+                known_ids.add(device_id)
+                new_entities.append(
+                    LevitonFan(client, coordinator, device_id, config_entry.entry_id)
+                )
+        if new_entities:
+            async_add_entities(new_entities)
 
-    async_add_entities(entities)
+    _add_new_entities()
+    config_entry.async_on_unload(coordinator.async_add_listener(_add_new_entities))
 
 
 class LevitonFan(LevitonEntity, FanEntity):

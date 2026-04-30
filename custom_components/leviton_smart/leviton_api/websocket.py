@@ -190,24 +190,41 @@ class LevitonWebSocket:
             return
 
         for device_id in self._device_ids:
-            # modelId must be an integer in the subscription
-            try:
-                model_id = int(device_id)
-            except (ValueError, TypeError):
-                _LOGGER.warning("Invalid device ID format: %s", device_id)
-                continue
-
-            payload = {
-                "type": "subscribe",
-                "subscription": {
-                    "modelName": "IotSwitch",
-                    "modelId": model_id,
-                }
-            }
-            _LOGGER.debug("Subscribing to device %d", model_id)
-            await self._ws.send_json(payload)
+            await self._send_subscribe(device_id)
 
         _LOGGER.info("Subscribed to %d devices.", len(self._device_ids))
+
+    async def _send_subscribe(self, device_id: str) -> None:
+        """Send a single subscribe payload for a device."""
+        if not self._ws:
+            return
+        try:
+            model_id = int(device_id)
+        except (ValueError, TypeError):
+            _LOGGER.warning("Invalid device ID format: %s", device_id)
+            return
+
+        payload = {
+            "type": "subscribe",
+            "subscription": {
+                "modelName": "IotSwitch",
+                "modelId": model_id,
+            }
+        }
+        _LOGGER.debug("Subscribing to device %d", model_id)
+        await self._ws.send_json(payload)
+
+    async def add_device(self, device_id: str) -> None:
+        """
+        Track a newly-discovered device and subscribe to it if connected.
+        Safe to call repeatedly; duplicates are ignored.
+        """
+        device_id = str(device_id)
+        if device_id in self._device_ids:
+            return
+        self._device_ids.append(device_id)
+        if self._ws is not None and not self._ws.closed:
+            await self._send_subscribe(device_id)
 
     def _process_notification(self, data: Dict[str, Any]) -> None:
         """
