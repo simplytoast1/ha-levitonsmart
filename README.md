@@ -18,7 +18,11 @@ A modern Home Assistant integration for Leviton Decora Smart Wi-Fi devices with 
 - **Fan Speed Control**: 4-speed fan controllers with proper speed mapping.
 - **Motion Sensors**: Motion dimmers expose both light and motion sensor entities.
 - **Switches & Outlets**: On/off control for all switch, outlet, and GFCI types.
-- **Session Persistence**: Maintains authentication across Home Assistant restarts.
+- **Session Persistence**: Maintains authentication across Home Assistant restarts, silently renewing an expired token and prompting you to re-authenticate only when it genuinely needs a password or 2FA code.
+
+## Requirements
+
+Home Assistant 2024.11 or newer.
 
 ## Supported Devices
 
@@ -80,9 +84,14 @@ A modern Home Assistant integration for Leviton Decora Smart Wi-Fi devices with 
 5. If you have 2FA enabled, enter the code when prompted.
 6. Your devices will be automatically discovered and added.
 
+### Updating your credentials
+
+If you change your My Leviton password, open **Settings** > **Devices & Services** > **Leviton Decora Smart** and use **Reconfigure** on the entry menu. When the session cannot be renewed on its own, the integration also shows a **Re-authenticate** button on the card.
+
 ## Troubleshooting
 
 - **Authentication Failed**: Ensure your email and password are correct.
+- **"Token expired and no credentials stored"**: Fixed in 1.2.0. Update the integration, then restart Home Assistant.
 - **2FA Issues**: Make sure you're entering the current 2FA code from your authenticator app.
 - **No Devices Found**: Verify that your devices are visible in the My Leviton app.
 - **Updates Not Reflecting**: Check that Home Assistant can reach `wss://socket.cloud.leviton.com`.

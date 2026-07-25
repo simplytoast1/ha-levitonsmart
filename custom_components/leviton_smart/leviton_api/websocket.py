@@ -59,6 +59,31 @@ class LevitonWebSocket:
         self._running = True
         self._reconnect_task = asyncio.create_task(self._connect_loop())
 
+    def update_login_response(self, login_response: Dict[str, Any]) -> None:
+        """
+        Swap in a refreshed login response.
+
+        The WebSocket authenticates with the whole login response, so after the
+        REST client silently re-authenticates this has to be replaced or the next
+        reconnect would present a dead token. Call reconnect() to apply it to a
+        connection that is already open.
+
+        :param login_response: The refreshed login response dict.
+        """
+        self._login_response = login_response
+
+    async def reconnect(self) -> None:
+        """
+        Drop the current connection so the reconnect loop picks up new credentials.
+
+        No-op if nothing is connected; the connect loop will use the latest
+        login response on its next attempt either way.
+        """
+        ws = self._ws
+        if ws is not None and not ws.closed:
+            _LOGGER.info("Session refreshed, reconnecting WebSocket...")
+            await ws.close()
+
     async def stop(self) -> None:
         """
         Stop the WebSocket connection and cleanup tasks.

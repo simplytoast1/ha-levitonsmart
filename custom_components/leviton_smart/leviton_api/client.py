@@ -13,7 +13,7 @@ suitable for Home Assistant.
 import logging
 import json
 import aiohttp
-from typing import Optional, Dict, List, Any
+from typing import Callable, Optional, Dict, List, Any
 
 # Logger for this module
 _LOGGER = logging.getLogger(__name__)
@@ -32,12 +32,27 @@ DEFAULT_HEADERS = {
 }
 
 
-class TwoFactorRequired(Exception):
+class LevitonAuthError(Exception):
+    """
+    Base class for authentication problems that only the user can resolve.
+
+    Callers should map this to ConfigEntryAuthFailed so Home Assistant starts a
+    re-authentication flow instead of silently retrying forever.
+    """
+    pass
+
+
+class TwoFactorRequired(LevitonAuthError):
     """Raised when the API returns a 2FA challenge."""
     pass
 
 
-class AuthenticationExpired(Exception):
+class InvalidCredentials(LevitonAuthError):
+    """Raised when the API rejects the supplied email/password (or 2FA code)."""
+    pass
+
+
+class AuthenticationExpired(LevitonAuthError):
     """Raised when the token has expired and re-authentication is needed."""
     pass
 
@@ -50,11 +65,18 @@ class LevitonApiClient:
     required to interact with Leviton Decora Smart devices.
     """
 
-    def __init__(self, session: aiohttp.ClientSession) -> None:
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        on_token_refresh: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> None:
         """
         Initialize the API client.
 
         :param session: The aiohttp ClientSession to use for making requests.
+        :param on_token_refresh: Optional callback invoked with the new login response
+                                 whenever the client silently re-authenticates, so the
+                                 caller can persist the refreshed session.
         """
         self._session = session
         self._token: Optional[str] = None
@@ -63,6 +85,20 @@ class LevitonApiClient:
         self._password: Optional[str] = None
         self._code: Optional[str] = None
         self._login_response: Optional[Dict[str, Any]] = None
+        self._on_token_refresh = on_token_refresh
+
+    def set_credentials(self, email: str, password: str) -> None:
+        """
+        Provide the credentials used to silently re-authenticate on a 401.
+
+        This must be called when a session is restored instead of logged in, since
+        restore_login_response() only carries the token and never sees the password.
+
+        :param email: User's email address.
+        :param password: User's password.
+        """
+        self._email = email
+        self._password = password
 
     def restore_session(self, token: str, user_id: str) -> None:
         """Restore a previously saved session."""
@@ -73,6 +109,9 @@ class LevitonApiClient:
         """
         Restore the full login response from stored config entry data.
         This avoids needing to re-authenticate (and re-do 2FA) on every restart.
+
+        Note this only restores the token. Pair it with set_credentials() so the
+        client can recover on its own once that token expires.
 
         :param login_response: The full login response dict stored during initial setup.
         """
@@ -107,7 +146,8 @@ class LevitonApiClient:
         :param code: Optional 2FA code if required.
         :return: The full JSON login response dictionary.
         :raises TwoFactorRequired: If the server asks for a 2FA code.
-        :raises Exception: If authentication fails or response is invalid.
+        :raises InvalidCredentials: If the server rejects the email/password/code.
+        :raises Exception: If the request fails for any other reason.
         """
         url = f"{BASE_URL}/Person/login?include=user"
         _LOGGER.debug("Attempting to login with email: %s", email)
@@ -127,9 +167,9 @@ class LevitonApiClient:
                     _LOGGER.info("2FA Code Required")
                     raise TwoFactorRequired("2FA Code Required")
                 
-                # Other auth failure - do not recursion here, just fail on initial login
+                # Other auth failure - do not recurse here, just fail on initial login
                 _LOGGER.error("Login failed. Status: %s. Response: %s", response.status, text)
-                raise Exception(f"Login failed: {text}")
+                raise InvalidCredentials(f"Login failed: {text}")
 
             if response.status != 200:
                 _LOGGER.error("Login failed. Status: %s. Response: %s", response.status, text)
@@ -158,11 +198,13 @@ class LevitonApiClient:
         """
         Helper to make authenticated requests with auto-retry on 401.
 
-        On 401 (token expired), tries to re-login WITHOUT 2FA code first.
-        If 2FA is required, raises AuthenticationExpired so HA can trigger re-auth.
+        On 401 (token expired), tries to re-login WITHOUT a 2FA code first.
+        Anything the user has to resolve (2FA challenge, changed password, or no
+        credentials available at all) surfaces as a LevitonAuthError so Home
+        Assistant can start a re-authentication flow.
         """
         if not self._token:
-            raise Exception("Not authenticated.")
+            raise AuthenticationExpired("Not authenticated.")
 
         headers = {**DEFAULT_HEADERS, **kwargs.pop("headers", {})}
         headers["Authorization"] = self._token
@@ -170,22 +212,40 @@ class LevitonApiClient:
         # First attempt
         response = await self._session.request(method, url, headers=headers, **kwargs)
 
-        if response.status == 401:
-            _LOGGER.warning("Token expired (401). Attempting re-authentication...")
+        if response.status != 401:
+            return response
 
-            if self._email and self._password:
-                try:
-                    # Try to re-login WITHOUT 2FA code (may work if remembered)
-                    await self.login(self._email, self._password)
-                    headers["Authorization"] = self._token
-                    response = await self._session.request(method, url, headers=headers, **kwargs)
-                except TwoFactorRequired:
-                    # 2FA required - user needs to re-authenticate manually
-                    _LOGGER.error("Token expired and 2FA required. User must re-authenticate.")
-                    raise AuthenticationExpired("Token expired. Please re-authenticate in Home Assistant.")
-            else:
-                _LOGGER.error("Cannot re-authenticate: missing credentials.")
-                raise AuthenticationExpired("Token expired and no credentials stored.")
+        # Discard the rejected response before retrying.
+        response.close()
+        _LOGGER.warning("Token expired (401). Attempting re-authentication...")
+
+        if not (self._email and self._password):
+            _LOGGER.error("Cannot re-authenticate: missing credentials.")
+            raise AuthenticationExpired("Token expired and no credentials stored.")
+
+        try:
+            # Try to re-login WITHOUT 2FA code (may work if remembered)
+            login_response = await self.login(self._email, self._password)
+        except TwoFactorRequired as err:
+            # 2FA required - user needs to re-authenticate manually
+            _LOGGER.error("Token expired and 2FA required. User must re-authenticate.")
+            raise AuthenticationExpired(
+                "Token expired and a new two-factor code is required."
+            ) from err
+
+        # Hand the refreshed session back so it can be persisted and reused
+        # (the WebSocket authenticates with the same login response).
+        if self._on_token_refresh:
+            self._on_token_refresh(login_response)
+
+        headers["Authorization"] = self._token
+        response = await self._session.request(method, url, headers=headers, **kwargs)
+
+        if response.status == 401:
+            response.close()
+            raise AuthenticationExpired(
+                "Re-authentication succeeded but the API still rejected the token."
+            )
 
         return response
 
@@ -204,7 +264,7 @@ class LevitonApiClient:
         :raises Exception: If no permissions or accounts are found.
         """
         if not self._token or not self._user_id:
-            raise Exception("Not authenticated. Please login first.")
+            raise AuthenticationExpired("Not authenticated. Please login first.")
 
         url = f"{BASE_URL}/Person/{self._user_id}/residentialPermissions"
         _LOGGER.debug("Fetching residential permissions...")
@@ -237,7 +297,7 @@ class LevitonApiClient:
         :raises Exception: If the account details are invalid.
         """
         if not self._token:
-            raise Exception("Not authenticated.")
+            raise AuthenticationExpired("Not authenticated.")
             
         url = f"{BASE_URL}/ResidentialAccounts/{account_id}"
         _LOGGER.debug("Fetching residential account details for ID: %s", account_id)
@@ -284,7 +344,7 @@ class LevitonApiClient:
         :return: A list of device dictionaries containing status and config.
         """
         if not self._token:
-            raise Exception("Not authenticated.")
+            raise AuthenticationExpired("Not authenticated.")
 
         url = f"{BASE_URL}/Residences/{residence_id}/iotSwitches"
         _LOGGER.debug("Discovering devices for residence: %s", residence_id)
@@ -308,7 +368,7 @@ class LevitonApiClient:
         :return: Device dictionary with current state.
         """
         if not self._token:
-            raise Exception("Not authenticated.")
+            raise AuthenticationExpired("Not authenticated.")
 
         url = f"{BASE_URL}/IotSwitches/{device_id}"
         _LOGGER.debug("Fetching state for device: %s", device_id)
@@ -329,7 +389,7 @@ class LevitonApiClient:
         :param attributes: Dictionary of attributes to update (e.g., {'power': 'ON'}).
         """
         if not self._token:
-            raise Exception("Not authenticated.")
+            raise AuthenticationExpired("Not authenticated.")
             
         url = f"{BASE_URL}/IotSwitches/{device_id}"
         

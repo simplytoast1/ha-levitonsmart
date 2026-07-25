@@ -19,11 +19,11 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN, PLATFORMS, UPDATE_INTERVAL
-from .leviton_api.client import LevitonApiClient
+from .leviton_api.client import LevitonApiClient, LevitonAuthError
 from .leviton_api.websocket import LevitonWebSocket
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,7 +43,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     password = entry.data[CONF_PASSWORD]
 
     session = async_get_clientsession(hass)
-    client = LevitonApiClient(session)
+
+    # Populated once the WebSocket exists, so a mid-session token refresh can
+    # reach it. The REST client is built before the WebSocket.
+    ws_holder: Dict[str, LevitonWebSocket] = {}
+
+    @callback
+    def _persist_login_response(login_response: Dict[str, Any]) -> None:
+        """
+        Store a silently refreshed session back onto the config entry.
+
+        Without this the entry would keep the expired token forever, every restart
+        would burn another login round trip, and the WebSocket would keep
+        reconnecting with a token the cloud no longer accepts.
+        """
+        _LOGGER.debug("Persisting refreshed Leviton session to the config entry.")
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, "login_response": login_response}
+        )
+
+        ws = ws_holder.get("ws")
+        if ws is not None:
+            ws.update_login_response(login_response)
+            hass.async_create_task(ws.reconnect())
+
+    client = LevitonApiClient(session, on_token_refresh=_persist_login_response)
+
+    # The client needs the credentials, not just the token, so it can recover on
+    # its own when the stored token expires.
+    client.set_credentials(email, password)
 
     try:
         # Try to restore session from stored login_response (avoids needing 2FA again)
@@ -52,12 +80,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if stored_login_response:
             _LOGGER.debug("Restoring session from stored login response...")
             client.restore_login_response(stored_login_response)
-            login_response = stored_login_response
         else:
             # Fallback: Fresh login (will fail if 2FA required without code)
             _LOGGER.debug("No stored login response, attempting fresh login...")
             code = entry.data.get("code")
-            login_response = await client.login(email, password, code)
+            await client.login(email, password, code)
 
         _LOGGER.debug("Fetching residential permissions...")
         account_id = await client.get_residential_permissions()
@@ -65,15 +92,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Fetching residence ID...")
         residence_id = await client.get_residence_id(account_id)
 
+    except LevitonAuthError as err:
+        # Only the user can fix this, so ask them to re-authenticate instead of
+        # retrying forever behind a "will retry" message.
+        _LOGGER.error("Leviton authentication failed: %s", err)
+        raise ConfigEntryAuthFailed(str(err)) from err
+
     except Exception as err:
         _LOGGER.error("Failed to connect: %s", err)
         raise ConfigEntryNotReady from err
+
+    # The calls above may have refreshed the session, so take the current one.
+    login_response = client.login_response
 
     async def async_update_data():
         """Fetch data from API."""
         try:
             devices = await client.get_iot_switches(residence_id)
             return {str(d["id"]): d for d in devices}
+        except LevitonAuthError as err:
+            # Surfaces as a re-authentication prompt rather than a silent failure.
+            raise ConfigEntryAuthFailed(str(err)) from err
         except Exception as err:
              raise UpdateFailed(f"Error communicating with API: {err}")
 
@@ -81,6 +120,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
+        config_entry=entry,
         name=DOMAIN,
         update_method=async_update_data,
         update_interval=UPDATE_INTERVAL,
@@ -114,6 +154,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Initialize and start WebSocket
     ws = LevitonWebSocket(session, login_response, on_update)
+    ws_holder["ws"] = ws
     _LOGGER.info("Starting WebSocket connection...")
 
     # device_ids are keys in coordinator.data
